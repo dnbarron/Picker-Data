@@ -10,7 +10,7 @@ library(survival)
 library(arm)
 library(ggplot2)
 
-setwd('C:/Users/dbarron/Documents/Picker Data/')
+#setwd('C:/Users/dbarron/Documents/Picker Data/')
 #load("~/Picker Data/.RData")
 dta2009 <- read.dta('Inpatient2009.dta')
 
@@ -30,13 +30,14 @@ Date.rec.posix <- with(dta2009, DATEREC - delta.secs)
 class(Date.rec.posix) <- "POSIXct"
 # Remove the "time of day" part of the date
 Date.rec <- as.Date(Date.rec.posix)
+dta2009$Date.rec <- Date.rec
+rm(Date.rec)
 
 # Do the same for the date of first mailing
 mail1.posix <- with(dta2009, Mailing1 - delta.secs)
 class(mail1.posix) <- "POSIXct"
-Mailing1 <- as.Date(mail1.posix)
+dta2009$Mailing1 <- as.Date(mail1.posix)
 
-Reply.Time <- Date.rec - Mailing1
 
 # Do the same for the date of 2nd mailing
 mail2.posix <- with(dta2009, Mailing2 - delta.secs)
@@ -49,50 +50,220 @@ mail3.posix <- with(dta2009, Mailing3 - delta.secs)
 class(mail3.posix) <- "POSIXct"
 dta2009$Mailing3 <- as.Date(mail3.posix)
 
-dta2009$Reply.Time <- Reply.Time
-
+#dta2009$Reply.Time <- as.numeric(Reply.Time)
 
 overall <- dta2009$Q74[, drop=TRUE]
 overall.ord <- as.ordered(overall)
 overall.num <- as.numeric(overall)
-table(overall, useNA="ifany")
+#table(overall, useNA="ifany")
 dta2009 <- data.frame(dta2009, Overall.Sat=overall.num)
 
 
-ddply(dta2009,"Trustcode",summarize,max(Date.rec,na.rm=TRUE))
+#ddply(dta2009,"Trustcode",summarize,max(Date.rec,na.rm=TRUE))
 
 max.date <- max(dta2009$DATEREC,na.rm=TRUE)
 #  Replace missing date received with last recorded date
 outcome.levels <- levels(dta2009$Outcome)
 
-new.outcome <- with(dta2009,ifelse(Outcome==outcome.levels[1],"Returned",
-                              ifelse(Outcome==outcome.levels[6],"Not returned",NA)))
-new.Date.rec <- ifelse(new.outcome=="Not returned",max.date[[1]],dta2009$DATEREC)
-table(new.outcome)
+# Not retured reason unknown or opted out or not returned unknown reason counted
+# as not returned. All other non-returns treated as missing
+## Gives response rate of 52%
 
-reply.strata <- with(dta2009,factor(ifelse(Date.rec <= Mailing2, "Mail1",
+new.outcome <- with(dta2009,ifelse(Outcome==outcome.levels[1],"Returned",
+                              ifelse(Outcome==outcome.levels[6]|Outcome==outcome.levels[4],"Not returned",NA)))
+tmp <- table(new.outcome)
+tmp/sum(tmp)
+
+dta2009$new.Date.rec <- ifelse(new.outcome=="Not returned",max.date,dta2009$DATEREC)
+
+dta2009$reply.strata <- with(dta2009,factor(ifelse(Date.rec <= Mailing2, "Mail1",
                                            ifelse(Date.rec <= Mailing3 & Date.rec > Mailing2, "Mail2",
                                                   ifelse(Date.rec > Mailing3, "Mail3",NA)))))
 
-dta2009$Reply.Time2 <- Date.rec - dta2009$Mailing2
-dta2009$Reply.Time3 <- Date.rec - dta2009$Mailing3         
+# Check that replies actually received later than mailings.
+# If not, code as NA
 
-dta2009$Reply.Time2 <- ifelse(reply.strata=="Mail2",dta2009$Reply.Time2,NA)
-dta2009$Reply.Time3 <- ifelse(reply.strata=="Mail3",dta2009$Reply.Time3,NA)
-dta2009$Reply.Time1 <- ifelse(reply.strata=="Mail1",dta2009$Reply.Time,NA)
+Reply.Time <- with(dta2009,ifelse(Date.rec > Mailing1,Date.rec - Mailing1,NA))
+Reply.Time2 <- with(dta2009,ifelse(Date.rec > Mailing2,Date.rec - Mailing2,NA))
+Reply.Time3 <- with(dta2009,ifelse(Date.rec > Mailing3,Date.rec - Mailing3,NA))
 
-# End here
+dta2009$Reply.Time2 <- ifelse(dta2009$reply.strata=="Mail2",Reply.Time2,NA)
+dta2009$Reply.Time3 <- ifelse(dta2009$reply.strata=="Mail3",Reply.Time3,NA)
+dta2009$Reply.Time1 <- ifelse(dta2009$reply.strata=="Mail1",Reply.Time,NA)
+dta2009$Reply.Time <- Reply.Time
+rm(Reply.Time)
+dta2009$censored <- with(dta2009, ifelse(new.outcome=="Returned",1,
+                                         ifelse(new.outcome=="Not returned",0,NA)))
+dta2009$LogLOS <- with(dta2009,log(LOS))
+dta2009$Choice <- with(dta2009,factor(ifelse(Q10=="Yes","Yes","No")))
+dta2009$emergency <- with(dta2009,factor(ifelse(Q1=="Emergency or urgent","yes","no")))
+dta2009$overall.tri <- factor(with(dta2009, ifelse(Overall.Sat==1,1,
+                                      ifelse(Overall.Sat==2,2,
+                                             ifelse(is.na(Overall.Sat), NA, 3)))),labels=c("Excellent","Very good","Other"))
+dta2009$Trustcode <- factor(dta2009$Trustcode)
 
-vars.used <- c("Outcome.x","censored","age_group","RECONVER","LOS.x",
-               "LogLOS","Reply.Time1","Reply.Time2","Reply.Time3",
-               "reply.strata","Choice","emergency","Mailing1",
-               "Mailing2","Mailing3","overall.tri","Trustcode.x","early")
+# Remove unnecessary "Missing data" level
+dta2009$all_gender <- dta2009$all_gender[, drop=TRUE]
 
-dta2009.used <- subset(dta2009,select=vars.used)
+# Dichotomous outcome variables 
+# early defined as less than 15 days
+###############################
+dta2009$early <- factor(with(dta2009,ifelse(Reply.Time <= 14, "Early",ifelse(Reply.Time>14,"Late",NA))))
+dta2009$reply.strata2 <- factor(with(dta2009,ifelse(reply.strata=="Mail1","First",
+                                     ifelse(reply.strata=="Mail2"|reply.strata=="Mail3","Later",NA))))
 
+# vars.used <- c("Outcome","censored","age_group","LOS",
+#                "LogLOS","Reply.Time1","Reply.Time2","Reply.Time3",
+#                "reply.strata","Choice","emergency","Mailing1",
+#                "Mailing2","Mailing3","overall.tri","Trustcode","early")
+# 
+# 
+# dta2009.used <- subset(dta2009,select=vars.used)
+
+write.csv(dta2009,"dta2009.csv")
+
+# Tidy up workspace
+rm(Date.rec.posix,Mailing1,RepTime,Reply.Time2,Reply.Time3,date1,date2,delta.date)
+rm(delta.secs,g,mail1.posix,mail2.posix,max.date,new.Date.rec,new.outcome)
+rm(mail3.posix,outcome.levels,overall,overall.num,overall.ord,reply.strata2)
+
+
+##### Data checks
+
+with(dta2009,table(Outcome,overall,useNA="ifany"))
+# Shows 2202 cases recorded as "Returned useable questionnaire
+# but NA on Q74
+
+
+##### Are any returned but no return date recorded?
+
+with(dta2009,table(reply.strata,overall.tri,useNA="ifany"))
+
+# Yes, some valid responses without reply times.
+# 191 +        157  +      127 = 475 in total
+
+
+
+#####################
+## Descriptive stats
+########################
+tab.ov <- xtabs(~overall,dta2009)
+rbind(tab.ov,tab.ov/sum(tab.ov)*100)
+
+(tmp <- xtabs(~reply.strata,dta2009))
+tmp/sum(tmp)
+
+
+xtabs(~reply.strata + overall.tri, dta2009)
+with(dta2009,CrossTable(reply.strata,overall.tri, missing.include=F))
+with(dta2009,CrossTable(reply.strata2,overall.tri, missing.include=F))
+with(dta2009,CrossTable(reply.strata2,age_group, missing.include=F))
+with(dta2009,CrossTable(reply.strata2,all_gender, missing.include=F))
+with(dta2009,CrossTable(reply.strata2,emergency, missing.include=F))
+t.test(LOS~reply.strata2,dta2009,na.rm=TRUE)
+with(dta2009,CrossTable(new.outcome,age_group, missing.include=F))
+
+##########
+## Plots
+#################################
+
+
+RepTime <- with(dta2009,ifelse(reply.strata=="Mail1",Reply.Time1,
+                               ifelse(reply.strata=="Mail2",Reply.Time2,
+                                      ifelse(reply.strata=="Mail3",Reply.Time3,NA))))
+plotdata <- data.frame(Reply.Time=RepTime,Mailing=dta2009$reply.strata)
+levels(plotdata$Mailing) <- c("First","Second","Third")
+g <- ggplot(data=plotdata)
+g + geom_histogram(aes(x=Reply.Time,y=..density..,fill=Mailing),position="dodge") + xlab("Time to reply (days)") + 
+  ylab("Density") + xlim(c(0,40))
+
+# Could use density plot?
+# g + geom_density(aes(x=Reply.Time,colour=Mailing))
+
+###################################################################
+#### Regressions
+################################################
+
+surv2009 <- Surv(as.double(dta2009$Reply.Time), dta2009$censored)
+
+# All replies
+w1 <- survreg(surv2009 ~ overall.tri + cluster(Trustcode), data=dta2009)
+summary(w1)
+
+# First mailing
+w.first <- survreg(Surv(as.double(dta2009$Reply.Time1),censored) ~ overall.tri + cluster(Trustcode), data=dta2009)
+summary(w.first)
+
+# Second mailing
+w.second <- survreg(Surv(as.double(dta2009$Reply.Time2),censored) ~ overall.tri + cluster(Trustcode), data=dta2009)
+summary(w.second)
+
+# Third mailing
+w.third <- survreg(Surv(as.double(dta2009$Reply.Time3),censored) ~ overall.tri + cluster(Trustcode), data=dta2009)
+summary(w.third)
+
+####
+## Predicted response times in table 4
+####
+predict(w1,newdata=data.frame(overall.tri=levels(dta2009$overall.tri),Trustcode=levels(dta2009$Trustcode)[1]))
+predict(w.first,newdata=data.frame(overall.tri=levels(dta2009$overall.tri),Trustcode=levels(dta2009$Trustcode)[1]))
+predict(w.second,newdata=data.frame(overall.tri=levels(dta2009$overall.tri),Trustcode=levels(dta2009$Trustcode)[1]))
+predict(w.third,newdata=data.frame(overall.tri=levels(dta2009$overall.tri),Trustcode=levels(dta2009$Trustcode)[1]))
+
+### Full models (table 5)
+####################################
+
+# All replies
+w.all <- update(w1, . ~ . + emergency + age_group + LogLOS + all_gender)
+summary(w.all)
+
+# First mailing
+w.first.all <- update(w.first, . ~ . + emergency + age_group + LogLOS + all_gender)
+summary(w.first.all)
+
+# Second mailing
+w.second.all <- update(w.second, . ~ . + emergency + age_group + LogLOS + all_gender)
+summary(w.second.all)
+
+# Third mailing
+w.third.all <- update(w.third, . ~ . + emergency + age_group + LogLOS + all_gender)
+summary(w.third.all)
+
+##############
+# Regressions using dichotomous outcome (table 6)
+############################################
+early.reg <- lmer(early ~ overall.tri + (1|Trustcode), family=binomial, data=dta2009)
+display(early.reg)
+exp(fixef(early.reg))
+
+first.reg <- lmer(reply.strata2 ~ overall.tri + (1|Trustcode), family=binomial, data=dta2009)
+display(first.reg, digits=3)
+exp(fixef(first.reg))
+
+
+first.reg.full <- update(first.reg, .~. + emergency + age_group + LogLOS + all_gender)
+display(first.reg.full, digits=3)
+exp(fixef(first.reg.full))
+exp(.035)
+
+inv.logit <- function (x, min = 0, max = 1)
+{
+  p <- exp(x)/(1 + exp(x))
+  p <- ifelse(is.na(p) & !is.na(x), 1, p)
+  p * (max - min) + min
+}
+
+##### Predicted probs (table 7)
+b <- fixef(first.reg)
+inv.logit(b[1])
+inv.logit(b[1] + b[2])
+inv.logit(b[1]+b[3])
 
 
 ############### current end
+#########################################################################
+## Old stuff,not used in final paper
+##############################################################
 
 cc <- complete.cases(dta2009.used[,-c(7,8,9)])
 ss <- ggplot(data=dta2009.a,aes(x=RECONVER))
@@ -107,7 +278,7 @@ ix <- match(c(kp,time.vars),names(dta))
 
 
 # Check this is correct variable ****************************************
-xtabs(~Q74, dta)
+xtabs(~Q74, dta2009,na.action=na.pass,exclude=NaN)
 overall <- dta$Q74[, drop=TRUE]
 overall.num <- as.numeric(overall)
 table(overall, useNA="ifany")
@@ -248,7 +419,7 @@ reply.strata <- with(dta2009,factor(ifelse(Date.rec <= Mailing2, "Mail1",
 with(dta2006, Mailing2-Mailing1)
 (table(reply.strata, useNA="ifany"))
 
-ddply(dta2009.a,"reply.strata",summarise,mean(RECONVER,na.rm=TRUE))
+ddply(dta2009,"reply.strata",summarise,mean(RECONVER,na.rm=TRUE))
 summarize(dta2009.a,mean(RECONVER,na.rm=TRUE))
 
 library(descr)
